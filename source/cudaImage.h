@@ -1,6 +1,9 @@
-//********************************************************//
-// CUDA SIFT extractor by Marten Bjorkman aka Celebrandil //
-//********************************************************//  
+/*
+ * CudaSift library
+ *
+ * Copyright (C) 2007-2015 Marten Bjorkman <celle@nada.kth.se>
+ * Copyright (C) 2015 Siim Meerits <siim@yutani.ee>
+ */
 
 #ifndef CUDAIMAGE_H
 #define CUDAIMAGE_H
@@ -24,11 +27,4 @@ public:
   double CopyToTexture(CudaImage &dst, bool host);
 };
 
-int iDivUp(int a, int b);
-int iDivDown(int a, int b);
-int iAlignUp(int a, int b);
-int iAlignDown(int a, int b);
-void StartTimer(unsigned int *hTimer);
-double StopTimer(unsigned int hTimer);
-
-#endif // CUDAIMAGE_H
+#endif

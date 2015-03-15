@@ -1,9 +1,11 @@
-//********************************************************//
-// CUDA SIFT extractor by Marten Björkman aka Celebrandil //
-//              celle @ nada.kth.se                       //
-//********************************************************//  
+/*
+ * CudaSift library
+ *
+ * Copyright (C) 2007-2015 Marten Bjorkman <celle@nada.kth.se>
+ * Copyright (C) 2015 Siim Meerits <siim@yutani.ee>
+ */
 
-#include <iostream>  
+#include <iostream>
 #include <cmath>
 #include <iomanip>
 #include <opencv2/core/core.hpp>
@@ -13,7 +15,6 @@
 #include "cudaImage.h"
 #include "cudaSift.h"
 
-int ImproveHomography(SiftData &data, float *homography, int numLoops, float minScore, float maxAmbiguity, float thresh);
 double ComputeSingular(CudaImage *img, CudaImage *svd);
 void PrintMatchData(SiftData &siftData1, SiftData &siftData2, CudaImage &img);
 void MatchAll(SiftData &siftData1, SiftData &siftData2, float *homography);
@@ -21,8 +22,8 @@ void MatchAll(SiftData &siftData1, SiftData &siftData2, float *homography);
 ///////////////////////////////////////////////////////////////////////////////
 // Main program
 ///////////////////////////////////////////////////////////////////////////////
-int main(int argc, char **argv) 
-{     
+int main(int argc, char **argv)
+{
   // Read images using OpenCV
   cv::Mat limg, rimg;
   cv::imread("data/left.pgm", 0).convertTo(limg, CV_32FC1);
@@ -30,11 +31,11 @@ int main(int argc, char **argv)
   unsigned int w = limg.cols;
   unsigned int h = limg.rows;
   std::cout << "Image size = (" << w << "," << h << ")" << std::endl;
-  
+
   // Perform some initial blurring (if needed)
   cv::GaussianBlur(limg, limg, cv::Size(5,5), 1.0);
   cv::GaussianBlur(rimg, rimg, cv::Size(5,5), 1.0);
-        
+
   // Initial Cuda images and download images to device
   std::cout << "Initializing data..." << std::endl;
   InitCuda();
@@ -42,13 +43,13 @@ int main(int argc, char **argv)
   img1.Allocate(w, h, iAlignUp(w, 128), false, NULL, (float*)limg.data);
   img2.Allocate(w, h, iAlignUp(w, 128), false, NULL, (float*)rimg.data);
   img1.Download();
-  img2.Download(); 
+  img2.Download();
 
   // Extract Sift features from images
   SiftData siftData1, siftData2;
   float initBlur = 0.0f;
   float thresh = 5.0f;
-  InitSiftData(siftData1, 2048, true, true); 
+  InitSiftData(siftData1, 2048, true, true);
   InitSiftData(siftData2, 2048, true, true);
   ExtractSift(siftData1, img1, 5, initBlur, thresh, 0.0f);
   ExtractSift(siftData2, img2, 5, initBlur, thresh, 0.0f);
@@ -89,8 +90,8 @@ void MatchAll(SiftData &siftData1, SiftData &siftData2, float *homography)
     for (int j=0;j<numPts2;j++) {
       float *data2 = sift2[j].data;
       float sum = 0.0f;
-      for (int k=0;k<128;k++) 
-	sum += data1[k]*data2[k];    
+      for (int k=0;k<128;k++)
+	sum += data1[k]*data2[k];
       float den = homography[6]*sift1[i].xpos + homography[7]*sift1[i].ypos + homography[8];
       float dx = (homography[0]*sift1[i].xpos + homography[1]*sift1[i].ypos + homography[2]) / den - sift2[j].xpos;
       float dy = (homography[3]*sift1[i].xpos + homography[4]*sift1[i].ypos + homography[5]) / den - sift2[j].ypos;
@@ -100,7 +101,7 @@ void MatchAll(SiftData &siftData1, SiftData &siftData2, float *homography)
       if (err<100.0f || j==sift1[i].match) {
 	if (j==sift1[i].match && err<100.0f)
 	  std::cout << " *";
-	else if (j==sift1[i].match) 
+	else if (j==sift1[i].match)
 	  std::cout << " -";
 	else if (err<100.0f)
 	  std::cout << " +";
@@ -125,7 +126,7 @@ void PrintMatchData(SiftData &siftData1, SiftData &siftData2, CudaImage &img)
   int w = img.width;
   int h = img.height;
   std::cout << std::setprecision(3);
-  for (int j=0;j<numPts;j++) { 
+  for (int j=0;j<numPts;j++) {
     int k = sift1[j].match;
     if (sift1[j].match_error<10) {
       float dx = sift2[k].xpos - sift1[j].xpos;
@@ -143,7 +144,7 @@ void PrintMatchData(SiftData &siftData1, SiftData &siftData2, CudaImage &img)
 	int x = (int)(sift1[j].xpos + dx*l/len);
 	int y = (int)(sift1[j].ypos + dy*l/len);
 	h_img[y*w+x] = 255.0f;
-      }	
+      }
 #endif
     }
 #if 1
@@ -152,10 +153,10 @@ void PrintMatchData(SiftData &siftData1, SiftData &siftData2, CudaImage &img)
     int s = std::min(x, std::min(y, std::min(w-x-2, std::min(h-y-2, (int)(1.41*sift1[j].scale)))));
     int p = y*w + x;
     p += (w+1);
-    for (int k=0;k<s;k++) 
+    for (int k=0;k<s;k++)
       h_img[p-k] = h_img[p+k] = h_img[p-k*w] = h_img[p+k*w] = 0.0f;
     p -= (w+1);
-    for (int k=0;k<s;k++) 
+    for (int k=0;k<s;k++)
       h_img[p-k] = h_img[p+k] = h_img[p-k*w] =h_img[p+k*w] = 255.0f;
 #endif
   }
