@@ -35,6 +35,17 @@
 
 namespace cudasift
 {
+    enum {
+        CUDASIFT_POINT_XPOS = 0,
+        CUDASIFT_POINT_YPOS, // 1
+        CUDASIFT_POINT_SCALE, // 2
+        CUDASIFT_POINT_SHARPNESS, // 3
+        CUDASIFT_POINT_EDGENESS,  // 4
+        CUDASIFT_POINT_ORIENTATION, // 5
+        CUDASIFT_POINT_SCORE, // 6
+        CUDASIFT_POINT_SIZE // structure size
+    };
+
     cudaError set_threshold(float a, float b);
     cudaError set_scales(float* scales, size_t size);
     cudaError set_factor(float factor);

@@ -25,64 +25,61 @@ inline int iDivDown(int a, int b) { return a/b; }
 inline int iAlignUp(int a, int b) { return (a%b != 0) ?  (a - a%b + b) : a; }
 inline int iAlignDown(int a, int b) { return a - a%b; }
 
-void ExtractSift(SiftData &siftData, CudaImage &img, int numOctaves, double initial_blur, float thresh, float lowest_scale, float subsampling)
+void extract_sift(SiftData &siftData, CudaImage &img, int num_octaves, double initial_blur, float thresh, float lowest_scale, float subsampling)
 {
-    if (numOctaves > 1) {
+    if (num_octaves > 1) {
         cv::cuda::GpuMat subImg(cv::Size(img.cols / 2, img.rows / 2), img.type());
         cpu_scale_down(subImg, img, 0.5f);
 
         float total_blur = sqrt(initial_blur * initial_blur + 0.5f * 0.5f) / 2.0f;
-        ExtractSift(siftData, subImg, numOctaves - 1, total_blur, thresh, lowest_scale, subsampling * 2.0f);
+        extract_sift(siftData, subImg, num_octaves - 1, total_blur, thresh, lowest_scale, subsampling * 2.0f);
     }
 
-    if (lowest_scale < subsampling * 2.0f)
-        ExtractSiftOctave(siftData, img, initial_blur, thresh, lowest_scale, subsampling);
-}
+    if (lowest_scale < subsampling * 2.0f) {
+        const int maxPts = iAlignUp(4096, 128);
+        const int nb = NUM_SCALES + 3;
+        const int nd = NUM_SCALES + 3;
+        const double baseBlur = pow(2.0, -1.0/NUM_SCALES);
+        int w = img.width;
+        int h = img.height;
 
-void ExtractSiftOctave(SiftData &siftData, CudaImage &img, double initBlur, float thresh, float lowestScale, float subsampling)
-{
-    const int maxPts = iAlignUp(4096, 128);
-    const int nb = NUM_SCALES + 3;
-    const int nd = NUM_SCALES + 3;
-    const double baseBlur = pow(2.0, -1.0/NUM_SCALES);
-    int w = img.width;
-    int h = img.height;
-    CudaImage blurImg[nb];
-    CudaImage diffImg[nd];
-    CudaImage tempImg;
-    CudaImage sift; // { xpos, ypos, scale, strength, edge, orient1, orient2 };
-    CudaImage desc;
+        /*
+        CudaImage blurImg[nb];
+        CudaImage diffImg[nd];
+        CudaImage tempImg;
+        CudaImage sift; // { xpos, ypos, scale, strength, edge, orient1, orient2 };
+        CudaImage desc;
 
-    float *memory = NULL;
-    int p = iAlignUp(w, 128);
-    int allocSize = (nb+nd+1)*p*h + maxPts*7 +  128*maxPts;
-    CUDA_SAFECALL(cudaMalloc((void **)&memory, sizeof(float)*allocSize));
-    for (int i=0;i<nb;i++)
-        blurImg[i].Allocate(w, h, p, false, memory + i*p*h);
-    for (int i=0;i<nb-1;i++)
-        diffImg[i].Allocate(w, h, p, false, memory + (nb+i)*p*h);
-    tempImg.Allocate(w, h, p, false, memory + (nb+nd)*p*h);
+        float *memory = NULL;
+        int p = iAlignUp(w, 128);
+        int allocSize = (nb+nd+1)*p*h + maxPts*7 +  128*maxPts;
+        CUDA_SAFECALL(cudaMalloc((void **)&memory, sizeof(float)*allocSize));
+        for (int i=0;i<nb;i++)
+            blurImg[i].Allocate(w, h, p, false, memory + i*p*h);
+        for (int i=0;i<nb-1;i++)
+            diffImg[i].Allocate(w, h, p, false, memory + (nb+i)*p*h);
+        tempImg.Allocate(w, h, p, false, memory + (nb+nd)*p*h);
+        sift.Allocate(maxPts, 7, maxPts, false, memory + (nb+nd+1)*p*h);
+        desc.Allocate(128, maxPts, 128, false, memory + (nb+nd+1)*p*h + maxPts*7);
+        */
 
-    sift.Allocate(maxPts, 7, maxPts, false, memory + (nb+nd+1)*p*h);
-    desc.Allocate(128, maxPts, 128, false, memory + (nb+nd+1)*p*h + maxPts*7);
+        float diffScale = pow(2.0f, 1.0f/NUM_SCALES);
+        cpu_lowpass(blurImg, img, diffImg, baseBlur, diffScale, initial_blur);
 
-    float diffScale = pow(2.0f, 1.0f/NUM_SCALES);
-    cpu_lowpass(blurImg, img, diffImg, baseBlur, diffScale, initBlur);
+        cpu_subtract_multi(diffImg, blurImg);
 
-    cpu_subtract_multi(diffImg, blurImg);
+        double sigma = baseBlur * diffScale;
+        unsigned int total_points = cpu_find_points_multi(diffImg, sift, thresh, maxPts, 16.0f, sigma, 1.0f / NUM_SCALES, lowest_scale / subsampling);
 
-    double sigma = baseBlur*diffScale;
-    unsigned int totPts = cpu_find_points_multi(diffImg, sift, thresh, maxPts, 16.0f, sigma, 1.0f/NUM_SCALES, lowestScale/subsampling);
-
-    totPts = (totPts>=maxPts ? maxPts-1 : totPts);
-    if (totPts>0) {
-        cpu_compute_orientations(img, sift, totPts, maxPts);
-        SecondOrientations(sift, &totPts, maxPts);
-        cpu_extract_sift_descriptors(img, sift, desc, totPts, maxPts);
-        AddSiftData(siftData, sift.d_data, desc.d_data, totPts, maxPts, subsampling);
+        total_points = (total_points >= maxPts ? maxPts - 1 : total_points);
+        if (total_points > 0) {
+            cpu_compute_orientations(img, sift, total_points, maxPts);
+            SecondOrientations(sift, &total_points, maxPts);
+            cpu_extract_sift_descriptors(img, sift, desc, total_points, maxPts);
+            AddSiftData(siftData, sift.d_data, desc.d_data, total_points, maxPts, subsampling);
+        }
+        CUDA_SAFECALL(cudaThreadSynchronize());
     }
-    CUDA_SAFECALL(cudaThreadSynchronize());
-    CUDA_SAFECALL(cudaFree(memory));
 }
 
 void AddSiftData(SiftData &data, float *d_sift, float *d_desc, int numPts, int maxPts, float subsampling)

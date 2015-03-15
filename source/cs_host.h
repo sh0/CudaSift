@@ -17,8 +17,7 @@
 
 namespace cudasift
 {
-    void ExtractSift(SiftData &siftData, CudaImage &img, int numOctaves, double initBlur, float thresh, float lowestScale, float subsampling);
-    void ExtractSiftOctave(SiftData &siftData, CudaImage &img, double initBlur, float thresh, float lowestScale, float subsampling);
+    void extract_sift(SiftData &siftData, CudaImage &img, int numOctaves, double initBlur, float thresh, float lowestScale, float subsampling);
     void AddSiftData(SiftData &data, float *d_sift, float *d_desc, int numPts, int maxPts, float subsampling);
     void SecondOrientations(CudaImage &sift, int *initNumPts, int maxPts);
 };

@@ -275,16 +275,16 @@ __global__ void gpu_extract_sift_descriptors(float *g_Data, float *d_sift, float
 
     __syncthreads();
 
-    float theta = 2.0f*3.1415f/360.0f*d_sift[5*maxPts+bx];
+    float theta = 2.0f*3.1415f/360.0f*d_sift[CUDASIFT_POINT_ORIENTATION * maxPts + bx];
     float sina = sinf(theta);           // cosa -sina
     float cosa = cosf(theta);           // sina  cosa
-    float scale = 12.0f/16.0f*d_sift[2*maxPts+bx];
+    float scale = 12.0f/16.0f*d_sift[CUDASIFT_POINT_SCALE * maxPts + bx];
     float ssina = scale*sina;
     float scosa = scale*cosa;
 
     // Compute angles and gradients
-    float xpos = d_sift[0*maxPts+bx] + (tx-7.5f)*scosa + 7.5f*ssina;
-    float ypos = d_sift[1*maxPts+bx] + (tx-7.5f)*ssina - 7.5f*scosa;
+    float xpos = d_sift[CUDASIFT_POINT_XPOS * maxPts + bx] + (tx-7.5f)*scosa + 7.5f*ssina;
+    float ypos = d_sift[CUDASIFT_POINT_YPOS * maxPts + bx] + (tx-7.5f)*ssina - 7.5f*scosa;
 
     for (int i=0;i<128*NUMDESCBUFS/16;i++)
         buffer[16*i+tx] = 0.0f;
@@ -441,7 +441,7 @@ unsigned int cpu_find_points(
     CUDA_SAFECALL(cudaThreadSynchronize());
 
     unsigned int total_points = 0;
-    CUDA_SAFECALL(get_point_counter(&total_points));
+    CUDA_SAFECALL(get_point_counter(total_points));
     return total_points;
 }
 
@@ -540,11 +540,11 @@ __global__ void gpu_find_points(
                         int maxPts = d_MaxNumPoints;
                         unsigned int idx = atomicInc(d_PointCounter, 0x7fffffff);
                         idx = (idx>=maxPts ? maxPts-1 : idx);
-                        d_Sift[idx + 0*maxPts] = xpos + pdx;
-                        d_Sift[idx + 1*maxPts] = ypos - 1 + pdy;
-                        d_Sift[idx + 2*maxPts] = d_Scales[0] * exp2f(pds*d_Factor);
-                        d_Sift[idx + 3*maxPts] = val + dval;
-                        d_Sift[idx + 4*maxPts] = edge;
+                        d_Sift[idx + CUDASIFT_POINT_XPOS * maxPts] = xpos + pdx;
+                        d_Sift[idx + CUDASIFT_POINT_YPOS * maxPts] = ypos - 1 + pdy;
+                        d_Sift[idx + CUDASIFT_POINT_SCALE * maxPts] = d_Scales[0] * exp2f(pds * d_Factor);
+                        d_Sift[idx + CUDASIFT_POINT_SHARPNESS * maxPts] = val + dval;
+                        d_Sift[idx + CUDASIFT_POINT_EDGENESS * maxPts] = edge;
                         //printf("idx: %d %.1f %.1f %.2f\n", idx, d_Sift[idx + 0*maxPts], d_Sift[idx + 1*maxPts], edge);
                     }
                 }
@@ -586,8 +586,8 @@ __global__ void gpu_compute_orientations(float *g_Data, float *d_Sift, int maxPt
     float i2sigma2 = -1.0f/(2.0f*3.0f*3.0f);
     if (tx<15)
         gauss[tx] = exp(i2sigma2*(tx-7)*(tx-7));
-    int xp = (int)(d_Sift[bx + 0*maxPts] - 6.5f);
-    int yp = (int)(d_Sift[bx + 1*maxPts] - 6.5f);
+    int xp = (int)(d_Sift[bx + CUDASIFT_POINT_XPOS * maxPts] - 6.5f);
+    int yp = (int)(d_Sift[bx + CUDASIFT_POINT_YPOS * maxPts] - 6.5f);
     int px = xp & 15;
     int x = tx - px;
 
@@ -672,16 +672,16 @@ __global__ void gpu_compute_orientations(float *g_Data, float *d_Sift, int maxPt
         float val1 = hist[32+((i1+1)&31)];
         float val2 = hist[32+((i1+31)&31)];
         float peak = i1 + 0.5f*(val1-val2) / (2.0f*maxval1-val1-val2);
-        d_Sift[bx + 5*maxPts] = 11.25f*(peak<0.0f ? peak+32.0f : peak);
+        d_Sift[bx + CUDASIFT_POINT_ORIENTATION * maxPts] = 11.25f*(peak<0.0f ? peak+32.0f : peak);
         if (maxval2<0.8f*maxval1)
             i2 = -1;
         if (i2>=0) {
             float val1 = hist[32+((i2+1)&31)];
             float val2 = hist[32+((i2+31)&31)];
             float peak = i2 + 0.5f*(val1-val2) / (2.0f*maxval2-val1-val2);
-            d_Sift[bx + 6*maxPts] = 11.25f*(peak<0.0f ? peak+32.0f : peak);
+            d_Sift[bx + CUDASIFT_POINT_SCORE * maxPts] = 11.25f*(peak<0.0f ? peak+32.0f : peak);
         } else {
-            d_Sift[bx + 6*maxPts] = i2;
+            d_Sift[bx + CUDASIFT_POINT_SCORE * maxPts] = i2;
         }
     }
 }
@@ -754,7 +754,7 @@ unsigned int cpu_find_points_multi(cv::cuda::GpuMat& src, cv::cuda::GpuMat& sift
     }
 
     unsigned int total_points = 0;
-    CUDA_SAFECALL(get_point_counter(&total_points));
+    CUDA_SAFECALL(get_point_counter(total_points));
     return total_points;
 }
 
@@ -857,11 +857,11 @@ __global__ void gpu_find_points_multi(float *d_Data0, float *d_Sift, int width, 
                         int maxPts = d_MaxNumPoints;
                         unsigned int idx = atomicInc(d_PointCounter, 0x7fffffff);
                         idx = (idx>=maxPts ? maxPts-1 : idx);
-                        d_Sift[idx + 0*maxPts] = xpos + pdx;
-                        d_Sift[idx + 1*maxPts] = ypos - 1 + pdy;
-                        d_Sift[idx + 2*maxPts] = d_Scales[scale] * exp2f(pds*d_Factor);
-                        d_Sift[idx + 3*maxPts] = val + dval;
-                        d_Sift[idx + 4*maxPts] = edge;
+                        d_Sift[idx + CUDASIFT_POINT_XPOS * maxPts] = xpos + pdx;
+                        d_Sift[idx + CUDASIFT_POINT_YPOS * maxPts] = ypos - 1 + pdy;
+                        d_Sift[idx + CUDASIFT_POINT_SCALE * maxPts] = d_Scales[scale] * exp2f(pds*d_Factor);
+                        d_Sift[idx + CUDASIFT_POINT_SHARPNESS * maxPts] = val + dval;
+                        d_Sift[idx + CUDASIFT_POINT_EDGENESS * maxPts] = edge;
                     }
                 }
             }

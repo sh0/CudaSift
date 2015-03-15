@@ -8,6 +8,9 @@
 #ifndef H_CS_POINT
 #define H_CS_POINT
 
+// Internal
+#include "cs_device.h"
+
 namespace cudasift
 {
     struct s_point
@@ -30,40 +33,61 @@ namespace cudasift
         float data[128];
     };
 
-    struct s_data
+    struct s_key_points
     {
         public:
             // Constructor and destructor
-            s_data(unsigned int max_points)
+            s_key_points(unsigned int max_points)
             {
+                unsigned int alignment = 128 / sizeof(float);
+                if (max_points % alignment)
+                    max_points = max_points - (max_points % alignment) + alignment;
+
                 m_device.num_points = 0;
                 m_device.max_points = max_points;
-                if (cudaMalloc(&m_device.data, max_points * sizeof(s_point)) != cudaSuccess)
-                    throw std::runtime_error("cudasift::s_data: cudaMalloc() failed!");
+                CUDA_SAFECALL(cudaMalloc(&m_device.data, max_points * CUDASIFT_POINT_SIZE * sizeof(float)));
             }
 
-            ~s_data()
+            ~s_key_points()
             {
-                if (cudaFree(m_device.data) != cudaSuccess)
-                    throw std::runtime_error("cudasift::~s_data: cudaFree() failed!");
+                CUDA_SAFECALL(cudaFree(m_device.data));
             }
 
             // Upload and download
-            void upload(std::vector<s_point>& points)
+            void upload(std::vector<cv::Keypoint>& points)
             {
-                if (points.size() > m_device.max_points)
-                    throw std::runtime_error("cudasift::upload: Too many points for upload!");
+                assert(points.size() <= m_device.max_points)
                 m_device.num_points = points.size();
-                if (cudaMemcpy(m_device.data, points.data(), m_device.num_points * sizeof(s_point), cudaMemcpyHostToDevice) != cudaSuccess)
-                    throw std::runtime_error("cudasift::upload: cudaMemcpy() failed!");
+
+                size_t stride = m_device.max_points * sizeof(float);
+                float* data = new float[m_device.max_points * CUDASIFT_POINT_SIZE];
+                memset(data, 0, m_device.max_points * CUDASIFT_POINT_SIZE * sizeof(float));
+                for (size_t i = 0; i < points.size(); i++) {
+                    data[CUDASIFT_POINT_XPOS * stride + i] = points[i].pt.x;
+                    data[CUDASIFT_POINT_YPOS * stride + i] = points[i].pt.y;
+                    data[CUDASIFT_POINT_SCALE * stride + i] = points[i].size;
+                    data[CUDASIFT_POINT_ORIENTATION * stride + i] = points[i].angle;
+                    data[CUDASIFT_POINT_SCORE * stride + i] = points[i].response;
+                }
+                CUDA_SAFECALL(cudaMemcpy(m_device.data, data, m_device.max_points * CUDASIFT_POINT_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+                delete[] data;
             }
 
-            std::vector<s_point> download()
+            std::vector<cv::Keypoint> download()
             {
                 std::vector<s_point> points(m_device.num_points);
                 if (m_device.num_points > 0) {
-                    if (cudaMemcpy(points.data(), m_device.data, m_device.num_points * sizeof(s_point), cudaMemcpyDeviceToHost) != cudaSuccess)
-                        throw std::runtime_error("cudasift::download: cudaMemcpy() failed!");
+                    size_t stride = m_device.max_points * sizeof(float);
+                    float* data = new float[m_device.max_points * CUDASIFT_POINT_SIZE];
+                    CUDA_SAFECALL(cudaMemcpy(data, m_device.data, m_device.max_points * CUDASIFT_POINT_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+                    for (size_t i = 0; i < m_device.num_points; i++) {
+                        points[i].pt.x = data[CUDASIFT_POINT_XPOS * stride + i];
+                        points[i].pt.y = data[CUDASIFT_POINT_YPOS * stride + i];
+                        points[i].size = data[CUDASIFT_POINT_SCALE * stride + i];
+                        points[i].angle = data[CUDASIFT_POINT_ORIENTATION * stride + i];
+                        points[i].response = data[CUDASIFT_POINT_SCORE * stride + i];
+                    }
+                    delete[] data;
                 }
                 return points;
             }
@@ -79,7 +103,6 @@ namespace cudasift
         private:
             // Device
             s_device m_device;
-
     };
 };
 
