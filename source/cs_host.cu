@@ -54,6 +54,7 @@ void extract_sift(SiftData &siftData, CudaImage &img, int num_octaves, double in
         int p = iAlignUp(w, 128);
         int allocSize = (nb+nd+1)*p*h + maxPts*7 +  128*maxPts;
         CUDA_SAFECALL(cudaMalloc((void **)&memory, sizeof(float)*allocSize));
+
         for (int i=0;i<nb;i++)
             blurImg[i].Allocate(w, h, p, false, memory + i*p*h);
         for (int i=0;i<nb-1;i++)
@@ -63,8 +64,20 @@ void extract_sift(SiftData &siftData, CudaImage &img, int num_octaves, double in
         desc.Allocate(128, maxPts, 128, false, memory + (nb+nd+1)*p*h + maxPts*7);
         */
 
+        std::vector<cv::cuda::GpuMat> blurImg;
+        for (size_t i = 0; i < NUM_SCALES + 3; i++)
+            blurImg.push_back(cv::cuda::GpuMat(h, w, CV_32FC1));
+
+        std::vector<cv::cuda::GpuMat> diffImg;
+        for (size_t i = 0; i < NUM_SCALES + 2; i++)
+            diffImg.push_back(cv::cuda::GpuMat(h, w, CV_32FC1));
+
+        //s_keypoints sift(4096);
+        cv::cuda::GpuMat sift(CUDASIFT_POINT_SIZE, 4096, CV_32FC1);
+        cv::cuda::GpuMat desc(sift.cols, 128, CV_32FC1);
+
         float diffScale = pow(2.0f, 1.0f/NUM_SCALES);
-        cpu_lowpass(blurImg, img, diffImg, baseBlur, diffScale, initial_blur);
+        cpu_lowpass(blurImg, img, baseBlur, diffScale, initial_blur);
 
         cpu_subtract_multi(diffImg, blurImg);
 

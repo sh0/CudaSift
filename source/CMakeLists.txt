@@ -8,7 +8,7 @@
 # Sources
 #file(GLOB CUDA_SOURCE ${SOURCE_DIR}/*.cu)
 #file(GLOB CUDA_HEADER ${SOURCE_DIR}/*.h)
-set(CUDA_SOURCE cs_device.cu)
+set(CUDA_SOURCE cs_device.cu cs_library.cu)
 set(CUDA_HEADER cs_device.h)
 
 # CUDA compiler flags

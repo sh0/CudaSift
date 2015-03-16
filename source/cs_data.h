@@ -33,35 +33,35 @@ namespace cudasift
         float data[128];
     };
 
-    struct s_key_points
+    struct s_keypoints
     {
         public:
             // Constructor and destructor
-            s_key_points(unsigned int max_points)
+            s_keypoints(unsigned int max_points)
             {
                 unsigned int alignment = 128 / sizeof(float);
                 if (max_points % alignment)
                     max_points = max_points - (max_points % alignment) + alignment;
 
-                m_device.num_points = 0;
-                m_device.max_points = max_points;
-                CUDA_SAFECALL(cudaMalloc(&m_device.data, max_points * CUDASIFT_POINT_SIZE * sizeof(float)));
+                m_num_points = 0;
+                m_max_points = max_points;
+                CUDA_SAFECALL(cudaMalloc(&m_data, m_max_points * CUDASIFT_POINT_SIZE * sizeof(float)));
             }
 
-            ~s_key_points()
+            ~s_keypoints()
             {
-                CUDA_SAFECALL(cudaFree(m_device.data));
+                CUDA_SAFECALL(cudaFree(m_data));
             }
 
             // Upload and download
             void upload(std::vector<cv::Keypoint>& points)
             {
-                assert(points.size() <= m_device.max_points)
-                m_device.num_points = points.size();
+                assert(points.size() <= m_max_points)
+                m_num_points = points.size();
 
-                size_t stride = m_device.max_points * sizeof(float);
-                float* data = new float[m_device.max_points * CUDASIFT_POINT_SIZE];
-                memset(data, 0, m_device.max_points * CUDASIFT_POINT_SIZE * sizeof(float));
+                size_t stride = m_max_points * sizeof(float);
+                float* data = new float[m_max_points * CUDASIFT_POINT_SIZE];
+                memset(data, 0, m_max_points * CUDASIFT_POINT_SIZE * sizeof(float));
                 for (size_t i = 0; i < points.size(); i++) {
                     data[CUDASIFT_POINT_XPOS * stride + i] = points[i].pt.x;
                     data[CUDASIFT_POINT_YPOS * stride + i] = points[i].pt.y;
@@ -69,18 +69,18 @@ namespace cudasift
                     data[CUDASIFT_POINT_ORIENTATION * stride + i] = points[i].angle;
                     data[CUDASIFT_POINT_SCORE * stride + i] = points[i].response;
                 }
-                CUDA_SAFECALL(cudaMemcpy(m_device.data, data, m_device.max_points * CUDASIFT_POINT_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+                CUDA_SAFECALL(cudaMemcpy(m_data, data, m_max_points * CUDASIFT_POINT_SIZE * sizeof(float), cudaMemcpyHostToDevice));
                 delete[] data;
             }
 
             std::vector<cv::Keypoint> download()
             {
-                std::vector<s_point> points(m_device.num_points);
-                if (m_device.num_points > 0) {
-                    size_t stride = m_device.max_points * sizeof(float);
-                    float* data = new float[m_device.max_points * CUDASIFT_POINT_SIZE];
-                    CUDA_SAFECALL(cudaMemcpy(data, m_device.data, m_device.max_points * CUDASIFT_POINT_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
-                    for (size_t i = 0; i < m_device.num_points; i++) {
+                std::vector<s_point> points(m_num_points);
+                if (m_num_points > 0) {
+                    size_t stride = m_max_points * sizeof(float);
+                    float* data = new float[m_max_points * CUDASIFT_POINT_SIZE];
+                    CUDA_SAFECALL(cudaMemcpy(data, m_data, m_max_points * CUDASIFT_POINT_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+                    for (size_t i = 0; i < m_num_points; i++) {
                         points[i].pt.x = data[CUDASIFT_POINT_XPOS * stride + i];
                         points[i].pt.y = data[CUDASIFT_POINT_YPOS * stride + i];
                         points[i].size = data[CUDASIFT_POINT_SCALE * stride + i];
@@ -92,17 +92,17 @@ namespace cudasift
                 return points;
             }
 
-            // Device
-            struct s_device {
-                unsigned int num_points;
-                unsigned int max_points;
-                s_point* data;
-            };
-            s_device device() { return m_device; }
+            // Data
+            float* data() { return m_data; }
+            unsigned int num_points() { return m_num_points; }
+            void num_points(unsigned int num_points) { m_num_points = num_points; }
+            unsigned int max_points() { return m_max_points; }
 
         private:
-            // Device
-            s_device m_device;
+            // Data
+            float* m_data;
+            unsigned int m_num_points;
+            unsigned int m_max_points;
     };
 };
 
