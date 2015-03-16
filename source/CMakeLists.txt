@@ -9,7 +9,7 @@
 #file(GLOB CUDA_SOURCE ${SOURCE_DIR}/*.cu)
 #file(GLOB CUDA_HEADER ${SOURCE_DIR}/*.h)
 set(CUDA_SOURCE cs_device.cu cs_library.cu)
-set(CUDA_HEADER cs_device.h)
+set(CUDA_HEADER cs_device.h cs_library.h)
 
 # CUDA compiler flags
 append_flags(CUDA_CFLAGS "-Xcompiler;-fPIC;-Xcompiler;-fopenmp")
@@ -32,3 +32,6 @@ include_directories(${CUDA_INCLUDE_DIRS})
 set(CUDA_EXEC "${PROJECT_NAME}")
 CUDA_ADD_LIBRARY(${CUDA_EXEC} ${CUDA_HEADER} ${CUDA_SOURCE} SHARED)
 target_link_libraries(${CUDA_EXEC} ${CUDA_LFLAGS})
+
+CUDA_ADD_EXECUTABLE(${PROJECT_NAME}-test ${CUDA_HEADER} ${CUDA_SOURCE} cs_main.cu)
+target_link_libraries(${PROJECT_NAME}-test ${CUDA_LFLAGS})
