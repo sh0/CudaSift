@@ -42,7 +42,6 @@ namespace cudasift
             double m_subsampling;
 
             // Points and descriptors
-            unsigned int m_num_points;
             unsigned int m_max_points;
             cv::cuda::GpuMat m_sift;
             cv::cuda::GpuMat m_desc;

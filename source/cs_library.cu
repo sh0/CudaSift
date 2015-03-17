@@ -22,7 +22,6 @@ s_sift::s_sift()
     m_subsampling = 1.0;
 
     // Points and descriptors
-    m_num_points = 0;
     m_max_points = 4096;
     m_sift = cv::cuda::GpuMat(CUDASIFT_POINT_SIZE, m_max_points, CV_32FC1);
     m_desc = cv::cuda::GpuMat(m_sift.cols, 128, CV_32FC1);
@@ -34,19 +33,37 @@ void s_sift::detect(cv::cuda::GpuMat image, std::vector<cv::KeyPoint>& keypoints
     // CUDA
     //cv::cuda::Stream stream = cv::cuda::Stream::Null();
 
-    // Reset points and descriptors
-    m_num_points = 0;
+    // Parameters
+    double sigma = 1.6;
+    int octave_num = cvRound(std::log(static_cast<double>(std::min(image.cols, image.rows))) / std::log(2.0) - 2.0) + 1;
+    int layer_num = 3;
 
-    // Extract
-    extract_octaves(image);
-    if (m_num_points <= 0)
+    // Build images
+    cv::cuda::GpuMat image_initial = build_initial(image, sigma);
+    std::vector<std::vector<cv::cuda::GpuMat>> image_pyr = build_pyramid(image_initial, octave_num, layer_num, sigma);
+    std::vector<std::vector<cv::cuda::GpuMat>> image_dog = build_pyramid(image_pyr, sigma);
+
+    // Find points
+    unsigned int num_points = 0;
+    for (size_t octave_id = 0; octave_id < image_dog.size(); octave_id++) {
+        double scale = std::pow(2.0, octave_id);
+        for (size_t layer_id = 0; layer_id < image_dog[octave_id].size() - 2; layer_id++) {
+            num_points = cpu_find_points(
+                image_dog[octave_id][layer_id + 0], image_dog[octave_id][layer_id + 1], image_dog[octave_id][layer_id + 2],
+                m_sift, m_threshold, num_points, m_max_points, 16.0f, scale, 1.0f / layer_num
+            );
+        }
+    }
+
+    // Quit if no points were found
+    if (num_points <= 0)
         return;
 
     // Get orientations
-    cpu_compute_orientations(image, m_sift, m_num_points, m_max_points);
+    cpu_compute_orientations(initial_image, m_sift, num_points, m_max_points);
 
     // Descriptors
-    cpu_extract_sift_descriptors(image, m_sift, m_desc, m_num_points, m_max_points);
+    cpu_extract_sift_descriptors(initial_image, m_sift, m_desc, num_points, m_max_points);
 
     // Download points
     cv::Mat point_mat;
@@ -58,7 +75,7 @@ void s_sift::detect(cv::cuda::GpuMat image, std::vector<cv::KeyPoint>& keypoints
     const float* ptr_scale = point_mat.ptr<float>(CUDASIFT_POINT_SCALE);
     const float* ptr_orientation = point_mat.ptr<float>(CUDASIFT_POINT_ORIENTATION);
     const float* ptr_score = point_mat.ptr<float>(CUDASIFT_POINT_SCORE);
-    for (size_t i = 0; i < m_num_points; i++) {
+    for (size_t i = 0; i < num_points; i++) {
         cv::KeyPoint kp;
         kp.pt.x = ptr_xpos[i];
         kp.pt.y = ptr_ypos[i];
@@ -69,6 +86,89 @@ void s_sift::detect(cv::cuda::GpuMat image, std::vector<cv::KeyPoint>& keypoints
     }
 }
 
+cv::cuda::GpuMat s_sift::build_initial(cv::cuda::GpuMat image, double sigma)
+{
+    // Build filter
+    static const float SIFT_INIT_SIGMA = 0.5f;
+    float initial_sigma = sqrtf(std::max(sigma * sigma - SIFT_INIT_SIGMA * SIFT_INIT_SIGMA, 0.01f));
+    cv::Ptr<cv::cuda::Filter> initial_filter = cv::cuda::createGaussianFilter(CV_32FC1, CV_32FC1, cv::Size(), initial_sigma, initial_sigma);
+
+    // Apply filter
+    cv::cuda::GpuMat initial_image;
+    initial_filter->apply(image, initial_image);
+    return initial_image;
+}
+
+std::vector<std::vector<cv::cuda::GpuMat>> s_sift::build_pyramid(cv::cuda::GpuMat image, int octave_num, int layer_num, double sigma)
+{
+    // Layer blur sigmas
+    std::vector<double> layer_sigma = { sigma };
+    double k = std::pow(2.0, 1.0 / layer_num);
+    for (int i = 1; i < layer_num + 3; i++)
+    {
+        double sig_prev = std::pow(k, static_cast<double>(i - 1)) * sigma;
+        double sig_total = sig_prev * k;
+        layer_sigma.push_back(std::sqrt(sig_total * sig_total - sig_prev * sig_prev));
+    }
+
+    // Octaves consisting of layers
+    std::vector<std::vector<cv::cuda::GpuMat>> octave_pyr;
+    for (int octave_id = 0; octave_id < octave_num; octave_id++) {
+        // Set of images in a single octave - we refer to those images as layers
+        std::vector<cv::cuda::GpuMat> layer_pyr;
+
+        // First layer image
+        if (octave_id == 0) {
+            // First image
+            layer_pyr.push_back(image);
+        } else {
+            // Downscale from previous octave
+            cv::cuda::GpuMat octave_image;
+            cv::cuda::resize(octave_pyr.back().back(), octave_image, cv::Size(image.cols / 2, image.rows / 2), 0, 0, cv::INTER_NEAREST);
+            layer_pyr.push_back(octave_image);
+        }
+
+        // Rest of the layer images
+        for (int layer_id = 1; layer_id < layer_num + 3; layer_id++) {
+            // Create filter
+            double sigma = sqrt((scale * scale) - (initial_blur * initial_blur));
+            cv::Ptr<cv::cuda::Filter> filter = cv::cuda::createGaussianFilter(CV_32FC1, CV_32FC1, cv::Size(), layer_sigma[layer_id], layer_sigma[layer_id]);
+
+            // Apply filter
+            cv::cuda::GpuMat layer_image;
+            filter->apply(layer_pyr.back(), layer_image);
+            layer_pyr.push_back(layer_image);
+        }
+
+        // Save the generated octave
+        octave_pyr.push_back(layer_pyr);
+    }
+
+    // Success
+    return octave_pyr;
+}
+
+std::vector<std::vector<cv::cuda::GpuMat>> s_sift::build_dog(std::vector<std::vector<cv::cuda::GpuMat>>& images)
+{
+    // Iterate over octaves
+    std::vector<std::vector<cv::cuda::GpuMat>> octave_pyr;
+    for (size_t octave_id = 0; octave_id < images.size(); octave_id++) {
+
+        // Iterate over layers
+        std::vector<cv::cuda::GpuMat> layer_pyr;
+        for (size_t layer_id = 0; layer_id < images[octave_id].size() - 1; layer_id++) {
+            cv::cuda::GpuMat image_dog;
+            cv::cuda::subtract(images[octave_id][layer_id + 0], images[octave_id][layer_id + 1], image_dog, cv::noArray(), -1);
+            layer_pyr.push_back(image_dog);
+        }
+        octave_pyr.push_back(layer_pyr);
+    }
+
+    // Success
+    return octave_pyr;
+}
+
+/*
 void s_sift::extract_octaves(cv::cuda::GpuMat image)
 {
     double initial_blur = m_initial_blur;
@@ -77,7 +177,7 @@ void s_sift::extract_octaves(cv::cuda::GpuMat image)
         // Downscaling
         if (octave > 0) {
             cv::cuda::GpuMat subimage;
-            cv::cuda::resize(image, subimage, cv::Size(image.cols / 2, image.rows / 2), 0, 0, cv::INTER_LINEAR);
+            cv::cuda::resize(image, subimage, cv::Size(image.cols / 2, image.rows / 2), 0, 0, cv::INTER_NEAREST);
             image = subimage;
         }
 
@@ -138,5 +238,6 @@ void s_sift::extract_scales(cv::cuda::GpuMat image, double initial_blur, double 
         scale *= scale_difference;
     }
 }
+*/
 
 };
