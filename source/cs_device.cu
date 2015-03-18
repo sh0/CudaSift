@@ -77,206 +77,19 @@ cudaError get_point_counter(unsigned int& points)
     return cudaMemcpyFromSymbol(&points, d_PointCounter, sizeof(unsigned int));
 }
 
-void cpu_extract_sift_descriptors(
-    cv::cuda::GpuMat& image, cv::cuda::GpuMat& sift, cv::cuda::GpuMat& desc,
-    int numPts, int maxPts
-) {
-    // Pointers
-    cv::cuda::PtrStepSzf gpu_image = image;
-    cv::cuda::PtrStepSzf gpu_sift = sift;
-    cv::cuda::PtrStepSzf gpu_desc = desc;
-
-    // Bind texture
-    tex.addressMode[0] = cudaAddressModeClamp;
-    tex.addressMode[1] = cudaAddressModeClamp;
-    tex.filterMode = cudaFilterModeLinear;
-    tex.normalized = false;
-    size_t offset = 0;
-    CUDA_SAFECALL(cudaBindTexture2D(&offset, tex, gpu_image.ptr(), tex.channelDesc, gpu_image.cols, gpu_image.rows, gpu_image.step));
-
-    // Calculate descriptors
-    dim3 blocks(numPts);
-    dim3 threads(16);
-    gpu_extract_sift_descriptors<<<blocks, threads>>>(gpu_image.ptr(), gpu_sift.ptr(), gpu_desc.ptr(), maxPts);
-    CUDA_SAFECALL(cudaGetLastError());
-    CUDA_SAFECALL(cudaThreadSynchronize());
-
-    // Unbind texture
-    CUDA_SAFECALL(cudaUnbindTexture(tex));
-}
-
-__global__ void gpu_extract_sift_descriptors(float* g_Data, float* d_sift, float* d_desc, int maxPts)
-{
-    __shared__ float buffer[NUMDESCBUFS * 128];
-    __shared__ float gauss[16];
-    __shared__ float gradients[256];
-    __shared__ float angles[256];
-
-    const int tx = threadIdx.x; // 0 -> 16
-    const int bx = blockIdx.x;  // 0 -> numPts
-
-    gauss[tx] = exp(-(tx - 7.5f) * (tx - 7.5f) / 128.0f);
-
-    __syncthreads();
-
-    float theta = 2.0f * 3.1415f / 360.0f * d_sift[CUDASIFT_POINT_ORIENTATION * maxPts + bx];
-    float sina = sinf(theta);           // cosa -sina
-    float cosa = cosf(theta);           // sina  cosa
-    float scale = 12.0f / 16.0f * d_sift[CUDASIFT_POINT_SCALE * maxPts + bx];
-    float ssina = scale * sina;
-    float scosa = scale * cosa;
-
-    // Compute angles and gradients
-    float xpos = d_sift[CUDASIFT_POINT_XPOS * maxPts + bx] + (tx - 7.5f) * scosa + 7.5f * ssina;
-    float ypos = d_sift[CUDASIFT_POINT_YPOS * maxPts + bx] + (tx - 7.5f) * ssina - 7.5f * scosa;
-
-    for (int i = 0; i < 128 * NUMDESCBUFS / 16; i++)
-        buffer[16 * i + tx] = 0.0f;
-
-    for (int y = 0; y < 16; y++) {
-        float dx = tex2D(tex, xpos + cosa, ypos + sina) - tex2D(tex, xpos - cosa, ypos - sina);
-        float dy = tex2D(tex, xpos - sina, ypos + cosa) - tex2D(tex, xpos + sina, ypos - cosa);
-        gradients[16 * y + tx] = gauss[y] * gauss[tx] * sqrtf(dx * dx + dy * dy);
-        angles[16 * y + tx] = 4.0f / 3.1415f * atan2f(dy, dx) + 4.0f;
-        xpos -= ssina;
-        ypos += scosa;
-    }
-
-    __syncthreads();
-    if (tx < NUMDESCBUFS) {
-        for (int txi = tx; txi < 16; txi += NUMDESCBUFS) {
-            int hori = (txi + 2) / 4 - 1;
-            float horf = (txi - 1.5f) / 4.0f - hori;
-            float ihorf = 1.0f - horf;
-            int veri = -1;
-            float verf = 1.0f - 1.5f / 4.0f;
-
-            for (int y = 0; y < 16; y++) {
-                int i = 16 * y + txi;
-                float grad = gradients[i];
-                float angf = angles[i];
-                int angi = angf;
-                int angp = (angi < 7 ? angi + 1 : 0);
-                angf -= angi;
-                float iangf = 1.0f - angf;
-                float iverf = 1.0f - verf;
-                int hist = 8 * (4 * veri + hori);
-                //printf("%d\n", hist);
-                int p1 = tx + NUMDESCBUFS * (angi + hist);
-                int p2 = tx + NUMDESCBUFS * (angp + hist);
-
-                if (txi >= 2) {
-                    float grad1 = ihorf * grad;
-                    if (y >= 2) {
-                        float grad2 = iverf * grad1;
-                        buffer[p1 + 0] += iangf * grad2;
-                        buffer[p2 + 0] +=  angf * grad2;
-                    }
-
-                    if (y <= 14) {
-                        float grad2 = verf * grad1;
-                        buffer[p1 + 32 * NUMDESCBUFS] += iangf * grad2;
-                        buffer[p2 + 32 * NUMDESCBUFS] +=  angf * grad2;
-                    }
-                }
-
-                if (txi <= 14) {
-                    float grad1 = horf * grad;
-                    if (y >= 2) {
-                        float grad2 = iverf * grad1;
-                        buffer[p1 + 8 * NUMDESCBUFS] += iangf * grad2;
-                        buffer[p2 + 8 * NUMDESCBUFS] +=  angf * grad2;
-                    }
-
-                    if (y <= 14) {
-                        float grad2 = verf * grad1;
-                        buffer[p1 + 40 * NUMDESCBUFS] += iangf * grad2;
-                        buffer[p2 + 40 * NUMDESCBUFS] +=  angf * grad2;
-                    }
-                }
-
-                verf += 0.25f;
-                if (verf > 1.0f) {
-                    verf -= 1.0f;
-                    veri ++;
-                }
-            }
-        }
-    }
-
-    __syncthreads();
-    const int t2 = (tx & 14) * 8;
-    const int tx2 = (tx & 1);
-
-    for (int i = 0; i < 16; i++)
-        buffer[NUMDESCBUFS * (i + t2) + tx2] += buffer[NUMDESCBUFS * (i + t2) + tx2 + 2];
-
-    __syncthreads();
-    const int t1 = tx * 8;
-    const int bptr = NUMDESCBUFS * tx + 2;
-    buffer[bptr] = 0.0f;
-
-    for (int i = 0; i < 8; i++) {
-        int p = NUMDESCBUFS * (i + t1);
-        buffer[p] += buffer[p + 1];
-        buffer[bptr] += buffer[p] * buffer[p];
-    }
-
-    __syncthreads();
-    if (tx < 8)
-        buffer[bptr] += buffer[bptr + 8 * NUMDESCBUFS];
-
-    __syncthreads();
-    if (tx < 4)
-        buffer[bptr] += buffer[bptr + 4 * NUMDESCBUFS];
-
-    __syncthreads();
-    if (tx < 2)
-        buffer[bptr] += buffer[bptr + 2 * NUMDESCBUFS];
-
-    __syncthreads();
-    float isum = 1.0f / sqrt(buffer[2] + buffer[NUMDESCBUFS + 2]);
-
-    buffer[bptr] = 0.0f;
-    for (int i = 0; i < 8; i++) {
-        int p = NUMDESCBUFS * (i + t1);
-        buffer[p] = isum * buffer[p];
-
-        if (buffer[p] > 0.2f)
-            buffer[p] = 0.2f;
-
-        buffer[bptr] += buffer[p] * buffer[p];
-    }
-
-    __syncthreads();
-    if (tx < 8)
-        buffer[bptr] += buffer[bptr + 8 * NUMDESCBUFS];
-
-    __syncthreads();
-    if (tx < 4)
-        buffer[bptr] += buffer[bptr + 4 * NUMDESCBUFS];
-
-    __syncthreads();
-    if (tx < 2)
-        buffer[bptr] += buffer[bptr + 2 * NUMDESCBUFS];
-
-    __syncthreads();
-    isum = 1.0f / sqrt(buffer[2] + buffer[NUMDESCBUFS + 2]);
-    for (int i = 0; i < 8; i++) {
-        int p = NUMDESCBUFS * (i + t1);
-        d_desc[128 * bx + (i + t1)] = isum * buffer[p];
-    }
-}
+#define SIFT_EXTREMA_W 32
 
 struct s_extrema
 {
-    static const int SIFT_IMG_BORDER = 5;
-    static const int m_block_x = 32;
-    static const int m_block_y = 32;
+    static const int m_border = 5;
+    static const int m_block_w = 32;
+    static const int m_block_h = 32;
 
     unsigned int* m_counter;
-    cv::cuda::PtrStepSzf m_data[3];
-    cv::cuda::PtrStepSzf m_sift;
+    int m_width;
+    int m_height;
+    cv::cuda::PtrStepf m_data[3];
+    cv::cuda::PtrStepf m_sift;
 
     float m_threshold_contrast;
 
@@ -285,25 +98,22 @@ struct s_extrema
 
 __global__ void s_extrema::execute()
 {
-    int x = m_block_x * blockIdx.x + threadIdx.x;
-    int y = m_block_y * blockIdx.y + threadIdx.y;
-    if (x < SIFT_IMG_BORDER || y < SIFT_IMG_BORDER || x >= m_data1.cols - SIFT_IMG_BORDER || y >= m_data1.rows - SIFT_IMG_BORDER)
+    // Shared block memory
+    __shared__ float shared_data[3][3][m_block_w];
+    __shared__ float shared_min[2][3][m_block_w];
+    __shared__ float shared_max[2][3][m_block_w];
+
+    // Coordinates
+    int x = m_block_w * blockIdx.x + threadIdx.x;
+    int y_min = m_block_h * blockIdx.y + threadIdx.y - 1;
+    int y_max = min(y_min + m_block_h + 1, m_height - m_border + 1);
+    if (x >= m_width - m_border || y >= m_height - m_border)
         return;
 
-    float r = m_data2(y, x);
+    // Loop in Y direction
+    for (int y = y_min; y < y_max; y++) {
 
-    if (fabs(r) < m_threshold_contrast)
-        return;
-
-    for (int i = 0; i < 3; i++) {
-        const float* ptr[] = { m_data[i].ptr(y - 1), m_data[i].ptr(y + 0), m_data[i].ptr(y + 1) };
-        for (int j = 0; j < 3; j++) {
-            float cmp[] = { ptr[j][x - 1], ptr[j][x + 0], ptr[j][x + 1] };
-        }
     }
-
-    float rmin;
-    float rmax;
 }
 
 unsigned int cpu_find_points2(
@@ -326,8 +136,8 @@ unsigned int cpu_find_points2(
     CUDA_SAFECALL(cudaMemcpy(extrema.m_counter, &num_points, sizeof(unsigned int), cudaMemcpyHostToDevice));
 
     // Execute
-    dim3 blocks(iDivUp(data1.cols, extrema.m_block_x), iDivUp(data1.rows, extrema.m_block_y));
-    dim3 threads(extrema.m_block_x, extrema.m_block_y);
+    dim3 blocks(iDivUp(data1.cols, extrema.m_block_w), iDivUp(data1.rows, extrema.m_block_h));
+    dim3 threads(extrema.m_block_w, 1);
     extrema.execute<<<blocks, threads>>>();
     CUDA_SAFECALL(cudaGetLastError());
     CUDA_SAFECALL(cudaThreadSynchronize());
@@ -639,6 +449,197 @@ __global__ void gpu_compute_orientations(float* g_Data, float* d_Sift, int maxPt
         } else {
             d_Sift[bx + CUDASIFT_POINT_SCORE * maxPts] = i2;
         }
+    }
+}
+
+void cpu_extract_sift_descriptors(
+    cv::cuda::GpuMat& image, cv::cuda::GpuMat& sift, cv::cuda::GpuMat& desc,
+    int numPts, int maxPts
+) {
+    // Pointers
+    cv::cuda::PtrStepSzf gpu_image = image;
+    cv::cuda::PtrStepSzf gpu_sift = sift;
+    cv::cuda::PtrStepSzf gpu_desc = desc;
+
+    // Bind texture
+    tex.addressMode[0] = cudaAddressModeClamp;
+    tex.addressMode[1] = cudaAddressModeClamp;
+    tex.filterMode = cudaFilterModeLinear;
+    tex.normalized = false;
+    size_t offset = 0;
+    CUDA_SAFECALL(cudaBindTexture2D(&offset, tex, gpu_image.ptr(), tex.channelDesc, gpu_image.cols, gpu_image.rows, gpu_image.step));
+
+    // Calculate descriptors
+    dim3 blocks(numPts);
+    dim3 threads(16);
+    gpu_extract_sift_descriptors<<<blocks, threads>>>(gpu_image.ptr(), gpu_sift.ptr(), gpu_desc.ptr(), maxPts);
+    CUDA_SAFECALL(cudaGetLastError());
+    CUDA_SAFECALL(cudaThreadSynchronize());
+
+    // Unbind texture
+    CUDA_SAFECALL(cudaUnbindTexture(tex));
+}
+
+__global__ void gpu_extract_sift_descriptors(float* g_Data, float* d_sift, float* d_desc, int maxPts)
+{
+    __shared__ float buffer[NUMDESCBUFS * 128];
+    __shared__ float gauss[16];
+    __shared__ float gradients[256];
+    __shared__ float angles[256];
+
+    const int tx = threadIdx.x; // 0 -> 16
+    const int bx = blockIdx.x;  // 0 -> numPts
+
+    gauss[tx] = exp(-(tx - 7.5f) * (tx - 7.5f) / 128.0f);
+
+    __syncthreads();
+
+    float theta = 2.0f * 3.1415f / 360.0f * d_sift[CUDASIFT_POINT_ORIENTATION * maxPts + bx];
+    float sina = sinf(theta);           // cosa -sina
+    float cosa = cosf(theta);           // sina  cosa
+    float scale = 12.0f / 16.0f * d_sift[CUDASIFT_POINT_SCALE * maxPts + bx];
+    float ssina = scale * sina;
+    float scosa = scale * cosa;
+
+    // Compute angles and gradients
+    float xpos = d_sift[CUDASIFT_POINT_XPOS * maxPts + bx] + (tx - 7.5f) * scosa + 7.5f * ssina;
+    float ypos = d_sift[CUDASIFT_POINT_YPOS * maxPts + bx] + (tx - 7.5f) * ssina - 7.5f * scosa;
+
+    for (int i = 0; i < 128 * NUMDESCBUFS / 16; i++)
+        buffer[16 * i + tx] = 0.0f;
+
+    for (int y = 0; y < 16; y++) {
+        float dx = tex2D(tex, xpos + cosa, ypos + sina) - tex2D(tex, xpos - cosa, ypos - sina);
+        float dy = tex2D(tex, xpos - sina, ypos + cosa) - tex2D(tex, xpos + sina, ypos - cosa);
+        gradients[16 * y + tx] = gauss[y] * gauss[tx] * sqrtf(dx * dx + dy * dy);
+        angles[16 * y + tx] = 4.0f / 3.1415f * atan2f(dy, dx) + 4.0f;
+        xpos -= ssina;
+        ypos += scosa;
+    }
+
+    __syncthreads();
+    if (tx < NUMDESCBUFS) {
+        for (int txi = tx; txi < 16; txi += NUMDESCBUFS) {
+            int hori = (txi + 2) / 4 - 1;
+            float horf = (txi - 1.5f) / 4.0f - hori;
+            float ihorf = 1.0f - horf;
+            int veri = -1;
+            float verf = 1.0f - 1.5f / 4.0f;
+
+            for (int y = 0; y < 16; y++) {
+                int i = 16 * y + txi;
+                float grad = gradients[i];
+                float angf = angles[i];
+                int angi = angf;
+                int angp = (angi < 7 ? angi + 1 : 0);
+                angf -= angi;
+                float iangf = 1.0f - angf;
+                float iverf = 1.0f - verf;
+                int hist = 8 * (4 * veri + hori);
+                //printf("%d\n", hist);
+                int p1 = tx + NUMDESCBUFS * (angi + hist);
+                int p2 = tx + NUMDESCBUFS * (angp + hist);
+
+                if (txi >= 2) {
+                    float grad1 = ihorf * grad;
+                    if (y >= 2) {
+                        float grad2 = iverf * grad1;
+                        buffer[p1 + 0] += iangf * grad2;
+                        buffer[p2 + 0] +=  angf * grad2;
+                    }
+
+                    if (y <= 14) {
+                        float grad2 = verf * grad1;
+                        buffer[p1 + 32 * NUMDESCBUFS] += iangf * grad2;
+                        buffer[p2 + 32 * NUMDESCBUFS] +=  angf * grad2;
+                    }
+                }
+
+                if (txi <= 14) {
+                    float grad1 = horf * grad;
+                    if (y >= 2) {
+                        float grad2 = iverf * grad1;
+                        buffer[p1 + 8 * NUMDESCBUFS] += iangf * grad2;
+                        buffer[p2 + 8 * NUMDESCBUFS] +=  angf * grad2;
+                    }
+
+                    if (y <= 14) {
+                        float grad2 = verf * grad1;
+                        buffer[p1 + 40 * NUMDESCBUFS] += iangf * grad2;
+                        buffer[p2 + 40 * NUMDESCBUFS] +=  angf * grad2;
+                    }
+                }
+
+                verf += 0.25f;
+                if (verf > 1.0f) {
+                    verf -= 1.0f;
+                    veri ++;
+                }
+            }
+        }
+    }
+
+    __syncthreads();
+    const int t2 = (tx & 14) * 8;
+    const int tx2 = (tx & 1);
+
+    for (int i = 0; i < 16; i++)
+        buffer[NUMDESCBUFS * (i + t2) + tx2] += buffer[NUMDESCBUFS * (i + t2) + tx2 + 2];
+
+    __syncthreads();
+    const int t1 = tx * 8;
+    const int bptr = NUMDESCBUFS * tx + 2;
+    buffer[bptr] = 0.0f;
+
+    for (int i = 0; i < 8; i++) {
+        int p = NUMDESCBUFS * (i + t1);
+        buffer[p] += buffer[p + 1];
+        buffer[bptr] += buffer[p] * buffer[p];
+    }
+
+    __syncthreads();
+    if (tx < 8)
+        buffer[bptr] += buffer[bptr + 8 * NUMDESCBUFS];
+
+    __syncthreads();
+    if (tx < 4)
+        buffer[bptr] += buffer[bptr + 4 * NUMDESCBUFS];
+
+    __syncthreads();
+    if (tx < 2)
+        buffer[bptr] += buffer[bptr + 2 * NUMDESCBUFS];
+
+    __syncthreads();
+    float isum = 1.0f / sqrt(buffer[2] + buffer[NUMDESCBUFS + 2]);
+
+    buffer[bptr] = 0.0f;
+    for (int i = 0; i < 8; i++) {
+        int p = NUMDESCBUFS * (i + t1);
+        buffer[p] = isum * buffer[p];
+
+        if (buffer[p] > 0.2f)
+            buffer[p] = 0.2f;
+
+        buffer[bptr] += buffer[p] * buffer[p];
+    }
+
+    __syncthreads();
+    if (tx < 8)
+        buffer[bptr] += buffer[bptr + 8 * NUMDESCBUFS];
+
+    __syncthreads();
+    if (tx < 4)
+        buffer[bptr] += buffer[bptr + 4 * NUMDESCBUFS];
+
+    __syncthreads();
+    if (tx < 2)
+        buffer[bptr] += buffer[bptr + 2 * NUMDESCBUFS];
+
+    __syncthreads();
+    isum = 1.0f / sqrt(buffer[2] + buffer[NUMDESCBUFS + 2]);
+    for (int i = 0; i < 8; i++) {
+        int p = NUMDESCBUFS * (i + t1);
+        d_desc[128 * bx + (i + t1)] = isum * buffer[p];
     }
 }
 
