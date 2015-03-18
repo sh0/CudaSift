@@ -6,6 +6,7 @@
 
 // Internal
 #include "cs_library.h"
+#include "opencv_sift.h"
 
 // C++
 #include <iostream>
@@ -43,12 +44,22 @@ int main(int argc, char** argv)
     // Process (GPU)
     cudasift::s_sift sift;
     std::vector<cv::KeyPoint> keypoints;
-    sift.detect(image_gpu, keypoints);
+    std::vector<cv::KeyPoint> keypoints2;
+    sift.detect(image_gpu, keypoints, keypoints2);
 
     // Process (CPU)
-    cv::Ptr<cv::xfeatures2d::SIFT> sift2 = cv::xfeatures2d::SIFT::create();
-    std::vector<cv::KeyPoint> keypoints2;
-    sift2->detect(image_raw, keypoints2);
+    /*
+    #if 1
+        cv::debug::SIFT_Impl sift2;
+        std::vector<cv::KeyPoint> keypoints2;
+        cv::Mat descriptors2;
+        sift2.detect(image_raw, keypoints2, descriptors2);
+    #else
+        cv::Ptr<cv::xfeatures2d::SIFT> sift2 = cv::xfeatures2d::SIFT::create();
+        std::vector<cv::KeyPoint> keypoints2;
+        sift2->detect(image_raw, keypoints2);
+    #endif
+    */
 
     // Convert to color
     cv::Mat image_rgb;

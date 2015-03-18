@@ -8,8 +8,8 @@
 # Sources
 #file(GLOB CUDA_SOURCE ${SOURCE_DIR}/*.cu)
 #file(GLOB CUDA_HEADER ${SOURCE_DIR}/*.h)
-set(CUDA_SOURCE cs_device.cu cs_library.cu)
-set(CUDA_HEADER cs_device.h cs_library.h)
+set(CUDA_SOURCE cs_device.cu cs_library.cu opencv_sift.cpp)
+set(CUDA_HEADER cs_device.h cs_library.h opencv_sift.h)
 
 # CUDA compiler flags
 append_flags(CUDA_CFLAGS "-Xcompiler;-fPIC;-Xcompiler;-fopenmp")

@@ -24,22 +24,19 @@ namespace cudasift
             s_sift();
 
             // Detector
-            void detect(cv::cuda::GpuMat image, std::vector<cv::KeyPoint>& keypoints);
+            void detect(cv::cuda::GpuMat image, std::vector<cv::KeyPoint>& keypoints, std::vector<cv::KeyPoint>& keypoints2);
 
             // Descriptors
             cv::cuda::GpuMat descriptors() { return m_desc; }
 
         private:
+            /*
             void extract_octaves(cv::cuda::GpuMat image);
             void extract_scales(cv::cuda::GpuMat image, double initial_blur, double subsampling);
-
-            // Parameters
-            size_t m_num_octaves;
-            size_t m_num_scales;
-            double m_initial_blur;
-            double m_threshold;
-            double m_lowest_scale;
-            double m_subsampling;
+            */
+            cv::cuda::GpuMat build_initial(cv::cuda::GpuMat image, double sigma);
+            std::vector< std::vector<cv::cuda::GpuMat> > build_pyramid(cv::cuda::GpuMat image, int octave_num, int layer_num, double sigma);
+            std::vector< std::vector<cv::cuda::GpuMat> > build_dog(std::vector< std::vector<cv::cuda::GpuMat> >& images);
 
             // Points and descriptors
             unsigned int m_max_points;

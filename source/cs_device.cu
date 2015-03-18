@@ -268,6 +268,78 @@ __global__ void gpu_extract_sift_descriptors(float* g_Data, float* d_sift, float
     }
 }
 
+struct s_extrema
+{
+    static const int SIFT_IMG_BORDER = 5;
+    static const int m_block_x = 32;
+    static const int m_block_y = 32;
+
+    unsigned int* m_counter;
+    cv::cuda::PtrStepSzf m_data[3];
+    cv::cuda::PtrStepSzf m_sift;
+
+    float m_threshold_contrast;
+
+    __global__ void execute();
+};
+
+__global__ void s_extrema::execute()
+{
+    int x = m_block_x * blockIdx.x + threadIdx.x;
+    int y = m_block_y * blockIdx.y + threadIdx.y;
+    if (x < SIFT_IMG_BORDER || y < SIFT_IMG_BORDER || x >= m_data1.cols - SIFT_IMG_BORDER || y >= m_data1.rows - SIFT_IMG_BORDER)
+        return;
+
+    float r = m_data2(y, x);
+
+    if (fabs(r) < m_threshold_contrast)
+        return;
+
+    for (int i = 0; i < 3; i++) {
+        const float* ptr[] = { m_data[i].ptr(y - 1), m_data[i].ptr(y + 0), m_data[i].ptr(y + 1) };
+        for (int j = 0; j < 3; j++) {
+            float cmp[] = { ptr[j][x - 1], ptr[j][x + 0], ptr[j][x + 1] };
+        }
+    }
+
+    float rmin;
+    float rmax;
+}
+
+unsigned int cpu_find_points2(
+    cv::cuda::GpuMat& data1, cv::cuda::GpuMat& data2, cv::cuda::GpuMat& data3,
+    cv::cuda::GpuMat& sift, unsigned int num_points, unsigned int max_points,
+    float threshold_contrast, float threshold_edge, float scale
+) {
+    // Structure
+    s_extrema extrema;
+    extrema.m_counter = NULL;
+    extrema.m_data[0] = data1;
+    extrema.m_data[1] = data2;
+    extrema.m_data[2] = data3;
+    extrema.m_sift = sift;
+
+    extrema.m_threshold_contrast = threshold_contrast;
+
+    // Counter
+    CUDA_SAFECALL(cudaMalloc(&extrema.m_counter, sizeof(unsigned int)));
+    CUDA_SAFECALL(cudaMemcpy(extrema.m_counter, &num_points, sizeof(unsigned int), cudaMemcpyHostToDevice));
+
+    // Execute
+    dim3 blocks(iDivUp(data1.cols, extrema.m_block_x), iDivUp(data1.rows, extrema.m_block_y));
+    dim3 threads(extrema.m_block_x, extrema.m_block_y);
+    extrema.execute<<<blocks, threads>>>();
+    CUDA_SAFECALL(cudaGetLastError());
+    CUDA_SAFECALL(cudaThreadSynchronize());
+
+    // Counter
+    CUDA_SAFECALL(cudaMemcpy(&num_points, extrema.m_counter, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+    CUDA_SAFECALL(cudaFree(extrema.m_counter));
+
+    // Success
+    return num_points;
+}
+
 unsigned int cpu_find_points(
     cv::cuda::GpuMat& data1, cv::cuda::GpuMat& data2, cv::cuda::GpuMat& data3, cv::cuda::GpuMat& sift,
     float thresh, int numPts, int maxPts, float edgeLimit, float scale, float factor

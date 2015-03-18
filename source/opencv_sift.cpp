@@ -102,61 +102,17 @@
 //    SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 \**********************************************************************************************/
 
-#include "precomp.hpp"
+// Internal
+#include "opencv_sift.h"
+
+// C++
 #include <iostream>
 #include <stdarg.h>
 
 namespace cv
 {
-namespace xfeatures2d
+namespace debug
 {
-
-/*!
- SIFT implementation.
-
- The class implements SIFT algorithm by D. Lowe.
- */
-class SIFT_Impl : public SIFT
-{
-public:
-    explicit SIFT_Impl( int nfeatures = 0, int nOctaveLayers = 3,
-                          double contrastThreshold = 0.04, double edgeThreshold = 10,
-                          double sigma = 1.6);
-
-    //! returns the descriptor size in floats (128)
-    int descriptorSize() const;
-
-    //! returns the descriptor type
-    int descriptorType() const;
-
-    //! returns the default norm type
-    int defaultNorm() const;
-
-    //! finds the keypoints and computes descriptors for them using SIFT algorithm.
-    //! Optionally it can compute descriptors for the user-provided keypoints
-    void detectAndCompute(InputArray img, InputArray mask,
-                    std::vector<KeyPoint>& keypoints,
-                    OutputArray descriptors,
-                    bool useProvidedKeypoints = false);
-
-    void buildGaussianPyramid( const Mat& base, std::vector<Mat>& pyr, int nOctaves ) const;
-    void buildDoGPyramid( const std::vector<Mat>& pyr, std::vector<Mat>& dogpyr ) const;
-    void findScaleSpaceExtrema( const std::vector<Mat>& gauss_pyr, const std::vector<Mat>& dog_pyr,
-                               std::vector<KeyPoint>& keypoints ) const;
-
-protected:
-    CV_PROP_RW int nfeatures;
-    CV_PROP_RW int nOctaveLayers;
-    CV_PROP_RW double contrastThreshold;
-    CV_PROP_RW double edgeThreshold;
-    CV_PROP_RW double sigma;
-};
-
-Ptr<SIFT> SIFT::create( int _nfeatures, int _nOctaveLayers,
-                     double _contrastThreshold, double _edgeThreshold, double _sigma )
-{
-    return makePtr<SIFT_Impl>(_nfeatures, _nOctaveLayers, _contrastThreshold, _edgeThreshold, _sigma);
-}
 
 /******************************* Defs and macros *****************************/
 
@@ -738,111 +694,41 @@ SIFT_Impl::SIFT_Impl( int _nfeatures, int _nOctaveLayers,
            double _contrastThreshold, double _edgeThreshold, double _sigma )
     : nfeatures(_nfeatures), nOctaveLayers(_nOctaveLayers),
     contrastThreshold(_contrastThreshold), edgeThreshold(_edgeThreshold), sigma(_sigma)
-{
-}
+{ }
 
-int SIFT_Impl::descriptorSize() const
-{
-    return SIFT_DESCR_WIDTH*SIFT_DESCR_WIDTH*SIFT_DESCR_HIST_BINS;
-}
-
-int SIFT_Impl::descriptorType() const
-{
-    return CV_32F;
-}
-
-int SIFT_Impl::defaultNorm() const
-{
-    return NORM_L2;
-}
-
-
-void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
-                      std::vector<KeyPoint>& keypoints,
-                      OutputArray _descriptors,
-                      bool useProvidedKeypoints)
+void SIFT_Impl::detect(InputArray _image, std::vector<KeyPoint>& keypoints, OutputArray _descriptors)
 {
     int firstOctave = -1, actualNOctaves = 0, actualNLayers = 0;
-    Mat image = _image.getMat(), mask = _mask.getMat();
+    Mat image = _image.getMat();
 
     if( image.empty() || image.depth() != CV_8U )
         CV_Error( Error::StsBadArg, "image is empty or has incorrect depth (!=CV_8U)" );
-
-    if( !mask.empty() && mask.type() != CV_8UC1 )
-        CV_Error( Error::StsBadArg, "mask has incorrect type (!=CV_8UC1)" );
-
-    if( useProvidedKeypoints )
-    {
-        firstOctave = 0;
-        int maxOctave = INT_MIN;
-        for( size_t i = 0; i < keypoints.size(); i++ )
-        {
-            int octave, layer;
-            float scale;
-            unpackOctave(keypoints[i], octave, layer, scale);
-            firstOctave = std::min(firstOctave, octave);
-            maxOctave = std::max(maxOctave, octave);
-            actualNLayers = std::max(actualNLayers, layer-2);
-        }
-
-        firstOctave = std::min(firstOctave, 0);
-        CV_Assert( firstOctave >= -1 && actualNLayers <= nOctaveLayers );
-        actualNOctaves = maxOctave - firstOctave + 1;
-    }
 
     Mat base = createInitialImage(image, firstOctave < 0, (float)sigma);
     std::vector<Mat> gpyr, dogpyr;
     int nOctaves = actualNOctaves > 0 ? actualNOctaves : cvRound(std::log( (double)std::min( base.cols, base.rows ) ) / std::log(2.) - 2) - firstOctave;
 
-    //double t, tf = getTickFrequency();
-    //t = (double)getTickCount();
     buildGaussianPyramid(base, gpyr, nOctaves);
     buildDoGPyramid(gpyr, dogpyr);
 
-    //t = (double)getTickCount() - t;
-    //printf("pyramid construction time: %g\n", t*1000./tf);
+    findScaleSpaceExtrema(gpyr, dogpyr, keypoints);
 
-    if( !useProvidedKeypoints )
-    {
-        //t = (double)getTickCount();
-        findScaleSpaceExtrema(gpyr, dogpyr, keypoints);
-        KeyPointsFilter::removeDuplicated( keypoints );
-
-        if( nfeatures > 0 )
-            KeyPointsFilter::retainBest(keypoints, nfeatures);
-        //t = (double)getTickCount() - t;
-        //printf("keypoint detection time: %g\n", t*1000./tf);
-
-        if( firstOctave < 0 )
-            for( size_t i = 0; i < keypoints.size(); i++ )
-            {
-                KeyPoint& kpt = keypoints[i];
-                float scale = 1.f/(float)(1 << -firstOctave);
-                kpt.octave = (kpt.octave & ~255) | ((kpt.octave + firstOctave) & 255);
-                kpt.pt *= scale;
-                kpt.size *= scale;
-            }
-
-        if( !mask.empty() )
-            KeyPointsFilter::runByPixelsMask( keypoints, mask );
-    }
-    else
-    {
-        // filter keypoints by mask
-        //KeyPointsFilter::runByPixelsMask( keypoints, mask );
+    if( firstOctave < 0 ) {
+        for( size_t i = 0; i < keypoints.size(); i++ )
+        {
+            KeyPoint& kpt = keypoints[i];
+            float scale = 1.f/(float)(1 << -firstOctave);
+            kpt.octave = (kpt.octave & ~255) | ((kpt.octave + firstOctave) & 255);
+            kpt.pt *= scale;
+            kpt.size *= scale;
+        }
     }
 
-    if( _descriptors.needed() )
-    {
-        //t = (double)getTickCount();
-        int dsize = descriptorSize();
-        _descriptors.create((int)keypoints.size(), dsize, CV_32F);
-        Mat descriptors = _descriptors.getMat();
+    int dsize = 128;
+    _descriptors.create((int)keypoints.size(), dsize, CV_32F);
+    Mat descriptors = _descriptors.getMat();
 
-        calcDescriptors(gpyr, keypoints, descriptors, nOctaveLayers, firstOctave);
-        //t = (double)getTickCount() - t;
-        //printf("descriptor extraction time: %g\n", t*1000./tf);
-    }
+    calcDescriptors(gpyr, keypoints, descriptors, nOctaveLayers, firstOctave);
 }
 
 }
